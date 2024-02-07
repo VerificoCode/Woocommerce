@@ -1,4 +1,4 @@
-# Plugin Name
+# AgeChecked Plus+ (Wordpress/Woocommerce Plugin)
 ## Description
 
 This plugin provides age verification functionality for WooCommerce stores.
