@@ -3,7 +3,7 @@
 * Plugin Name: AgeChecked Plus+ v2
 * Plugin URI: https://www.agechecked.com/
 * Description: Adds age verification to your website.
-* Version: 1.4.4
+* Version: 1.5.0
 * Author: AgeChecked Plus+ Verifico
 * Author URI: https://www.verifico.io
 */
