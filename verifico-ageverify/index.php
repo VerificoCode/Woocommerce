@@ -160,16 +160,34 @@ function unity_filter_users_by_age_verification( $query ) {
 add_action( 'pre_get_users', 'unity_filter_users_by_age_verification' );
 
 // -----------------------------------------------------------------------
-// Expose Age Verification Status in the WooCommerce Analytics > Customers
-// CSV export. The Analytics Customers *screen* itself (admin.php?page=
-// wc-admin&path=/customers) renders a React table with a hardcoded column
-// list and no JS filter to extend it (confirmed by inspecting WooCommerce's
-// built assets/client/admin/chunks/analytics-report-customers.js — its
-// getHeadersContent() array has no applyFilters() wrapper), so no column
-// can be added there without overriding WooCommerce's own JS bundle. The
-// export, however, is a documented PHP extension point.
+// Add Age Verification Status as a real column on the WooCommerce
+// Analytics > Customers screen (admin.php?page=wc-admin&path=/customers).
+//
+// Correction to an earlier assumption in this file's history: the
+// per-report lazy-loaded chunk (analytics-report-customers.js) has no
+// applyFilters() around its column list, but the *shared* ReportTable
+// component in the main app bundle (assets/client/admin/app/index.js)
+// wraps every report's {headers, rows, items} through a generic
+// `woocommerce_admin_report_table` JS filter, keyed by `endpoint`. That's
+// the real, documented extension point (see WooCommerce dev docs,
+// "Extending WooCommerce analytics reports") — confirmed by reading
+// app/index.js directly, not assumed.
 // -----------------------------------------------------------------------
 
+function unity_add_customers_rest_field( $response ) {
+    $user_id = $response->data['user_id'] ?? 0;
+
+    $response->data['merchant_age_verified'] = $user_id
+        ? get_user_meta( $user_id, 'merchant_age_verified', true )
+        : '';
+
+    return $response;
+}
+add_filter( 'woocommerce_rest_prepare_report_customers', 'unity_add_customers_rest_field' );
+
+// Also keep it in the CSV export (separate code path from the REST/table
+// JSON response above — export uses get_export_columns()/
+// prepare_item_for_export(), not woocommerce_rest_prepare_report_customers).
 function unity_add_customers_export_column( $export_columns ) {
     $export_columns['merchant_age_verified'] = __( 'Age Verification Status', 'agechecked-plus' );
     return $export_columns;
@@ -193,6 +211,21 @@ function unity_add_customers_export_value( $export_item, $item ) {
     return $export_item;
 }
 add_filter( 'woocommerce_report_customers_prepare_export_item', 'unity_add_customers_export_value', 10, 2 );
+
+function unity_enqueue_customers_report_column_script( $hook ) {
+    if ( empty( $_GET['page'] ) || 'wc-admin' !== $_GET['page'] ) {
+        return;
+    }
+
+    wp_enqueue_script(
+        'unity-customers-report-column',
+        plugins_url( 'admin-customers-report-column.js', __FILE__ ),
+        array( 'wp-hooks', 'wc-admin-app' ),
+        '1.0.0',
+        true
+    );
+}
+add_action( 'admin_enqueue_scripts', 'unity_enqueue_customers_report_column_script' );
 
 $GLOBALS['unityName'] = "AgeChecked Plus+";
 $GLOBALS['unityVersion'] = "2_0_0";
