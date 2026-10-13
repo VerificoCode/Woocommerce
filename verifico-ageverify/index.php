@@ -3,7 +3,7 @@
 * Plugin Name: AgeChecked Plus+ v2
 * Plugin URI: https://www.agechecked.com/
 * Description: Adds age verification to your website.
-* Version: 1.3.1
+* Version: 1.4.4
 * Author: AgeChecked Plus+ Verifico
 * Author URI: https://www.verifico.io
 */
@@ -12,18 +12,161 @@ use Automattic\WooCommerce\Utilities\OrderUtil;
 
 defined( 'ABSPATH' ) || exit;
 
-if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', get_option( 'active_plugins' ) ) ) ) {
-    // WooCommerce is enabled
-} else {
-    // WooCommerce is NOT enabled!
+function unity_is_woocommerce_active() {
+    return in_array(
+        'woocommerce/woocommerce.php',
+        apply_filters('active_plugins', get_option('active_plugins'))
+    )
+    || ( is_multisite() && array_key_exists(
+        'woocommerce/woocommerce.php',
+        get_site_option('active_sitewide_plugins', [])
+    ));
+}
+
+if ( ! unity_is_woocommerce_active() ) {
     return;
 }
+
+function unity_render_customer_age_verification_status( $user ) {
+    if ( ! current_user_can( 'edit_user', $user->ID ) ) {
+        return;
+    }
+
+    $is_verified = 'true' === get_user_meta( $user->ID, 'merchant_age_verified', true );
+    ?>
+<h2><?php esc_html_e( 'Age Verification Status', 'agechecked-plus' ); ?></h2>
+<table class="form-table" role="presentation">
+    <tr>
+        <th><label for="merchant_age_verified"><?php esc_html_e( 'Merchant Age Verified', 'agechecked-plus' ); ?></label></th>
+        <td>
+            <?php wp_nonce_field( 'unity_save_customer_age_verification_status', 'unity_age_verification_nonce' ); ?>
+            <label for="merchant_age_verified">
+                <input type="checkbox" name="merchant_age_verified" id="merchant_age_verified" value="true"
+                    <?php checked( $is_verified ); ?> />
+                <?php esc_html_e( 'This customer has passed age verification.', 'agechecked-plus' ); ?>
+            </label>
+        </td>
+    </tr>
+</table>
+<?php
+}
+add_action( 'show_user_profile', 'unity_render_customer_age_verification_status' );
+add_action( 'edit_user_profile', 'unity_render_customer_age_verification_status' );
+
+function unity_save_customer_age_verification_status( $user_id ) {
+    if (
+        ! current_user_can( 'edit_user', $user_id ) ||
+        ! isset( $_POST['unity_age_verification_nonce'] ) ||
+        ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['unity_age_verification_nonce'] ) ), 'unity_save_customer_age_verification_status' )
+    ) {
+        return;
+    }
+
+    if ( isset( $_POST['merchant_age_verified'] ) ) {
+        update_user_meta( $user_id, 'merchant_age_verified', 'true' );
+        return;
+    }
+
+    delete_user_meta( $user_id, 'merchant_age_verified' );
+}
+add_action( 'personal_options_update', 'unity_save_customer_age_verification_status' );
+add_action( 'edit_user_profile_update', 'unity_save_customer_age_verification_status' );
+
+// -----------------------------------------------------------------------
+// Age Verification Status column on the Users list (and WooCommerce
+// Customers, which uses the same WP_Users_List_Table under users.php).
+// Filterable via a dropdown in the list table header.
+// -----------------------------------------------------------------------
+
+function unity_add_user_age_verification_column( $columns ) {
+    $columns['merchant_age_verified'] = __( 'Age Verification Status', 'agechecked-plus' );
+    return $columns;
+}
+add_filter( 'manage_users_columns', 'unity_add_user_age_verification_column' );
+
+function unity_render_user_age_verification_column( $value, $column_name, $user_id ) {
+    if ( 'merchant_age_verified' !== $column_name ) {
+        return $value;
+    }
+
+    $is_verified = 'true' === get_user_meta( $user_id, 'merchant_age_verified', true );
+
+    return $is_verified
+        ? esc_html__( 'Verified', 'agechecked-plus' )
+        : esc_html__( 'Not verified', 'agechecked-plus' );
+}
+add_filter( 'manage_users_custom_column', 'unity_render_user_age_verification_column', 10, 3 );
+
+function unity_render_user_age_verification_filter( $which = '' ) {
+    $screen = get_current_screen();
+    if ( ! $screen || 'users' !== $screen->id ) {
+        return;
+    }
+
+    $selected = isset( $_GET['merchant_age_verified'] ) ? sanitize_text_field( wp_unslash( $_GET['merchant_age_verified'] ) ) : '';
+    $field_id = 'merchant_age_verified_filter' . ( 'top' === $which ? '' : '_' . $which );
+    ?>
+    <label class="screen-reader-text" for="<?php echo esc_attr( $field_id ); ?>"><?php esc_html_e( 'Filter by age verification status', 'agechecked-plus' ); ?></label>
+    <select name="merchant_age_verified" id="<?php echo esc_attr( $field_id ); ?>">
+        <option value=""><?php esc_html_e( 'All age verification statuses', 'agechecked-plus' ); ?></option>
+        <option value="verified" <?php selected( $selected, 'verified' ); ?>><?php esc_html_e( 'Verified', 'agechecked-plus' ); ?></option>
+        <option value="not_verified" <?php selected( $selected, 'not_verified' ); ?>><?php esc_html_e( 'Not verified', 'agechecked-plus' ); ?></option>
+    </select>
+    <?php
+    submit_button( __( 'Filter', 'agechecked-plus' ), '', 'filter_action', false );
+}
+add_action( 'restrict_manage_users', 'unity_render_user_age_verification_filter' );
+
+function unity_filter_users_by_age_verification( $query ) {
+    if ( ! is_admin() || ! ( $query instanceof WP_User_Query ) ) {
+        return;
+    }
+
+    if ( empty( $_GET['merchant_age_verified'] ) ) {
+        return;
+    }
+
+    $filter = sanitize_text_field( wp_unslash( $_GET['merchant_age_verified'] ) );
+
+    if ( 'verified' === $filter ) {
+        $meta_query = array(
+            array(
+                'key'   => 'merchant_age_verified',
+                'value' => 'true',
+            ),
+        );
+    } elseif ( 'not_verified' === $filter ) {
+        $meta_query = array(
+            'relation' => 'OR',
+            array(
+                'key'     => 'merchant_age_verified',
+                'compare' => 'NOT EXISTS',
+            ),
+            array(
+                'key'     => 'merchant_age_verified',
+                'value'   => 'true',
+                'compare' => '!=',
+            ),
+        );
+    } else {
+        return;
+    }
+
+    $existing   = $query->get( 'meta_query' );
+    $meta_query = is_array( $existing ) && $existing ? array_merge( array( $existing ), array( $meta_query ) ) : $meta_query;
+
+    $query->set( 'meta_query', $meta_query );
+}
+add_action( 'pre_get_users', 'unity_filter_users_by_age_verification' );
 
 $GLOBALS['unityName'] = "AgeChecked Plus+";
 $GLOBALS['unityVersion'] = "2_0_0";
 // To show register link
-$GLOBALS['unityRegsiter'] = 1;
+$GLOBALS['unityRegsiter'] = 0;
 $GLOBALS['unityUrl'] = "https://agechecked.verifico.io";
+// $GLOBALS['unityUrl'] = "https://unity.sites.test";
+// $GLOBALS['unityUrl'] = "https://unity.agechecked.com";
+// $GLOBALS['unityUrl'] = "http://localhost:8000";
 
 add_action( 'wp_footer', 'unity_ageverify' );
 
@@ -32,6 +175,7 @@ function unity_ageverify(){
     echo "<script>
     var script = document.createElement('script');
     script.src = \"".$GLOBALS['unityUrl']."/tr/?domain=\"+window.location.hostname+\"&v=".$GLOBALS['unityVersion']."\";
+    // script.src = \"".$GLOBALS['unityUrl']."/tr/?lang=cs-CZ&domain=\"+window.location.hostname+\"&v=".$GLOBALS['unityVersion']."\";
     script.async = true;
     document.getElementsByTagName('head')[0].appendChild(script);
     </script>";
@@ -45,10 +189,71 @@ function unity_add_query_vars_filter( $vars ){
 }
 add_filter( 'query_vars', 'unity_add_query_vars_filter' );
 
+function requiresAV($order_id) {
+    $order = wc_get_order($order_id);
+    $items = $order->get_items();
+    $requires_av = 0;
+    $options = get_option( 'unity_plugin_options' );
+
+    foreach ($items as $item_id => $item_data)
+    {   
+        $requires_av = 0;
+        //getting product object
+        $_product = wc_get_product($item_data->get_product_id());
+        //getting all the product category
+        $pro_cat_array = wp_get_post_terms($item_data->get_product_id(), 'product_cat', array( 'fields' => 'ids' ));
+        
+        if(is_array($options)) {
+            if(array_key_exists('category', $options)&&$options['mode']==1) {
+                if(!empty($options['category'])) {
+                    foreach($options['category'] as $cats) {
+                        if(in_array($cats, $pro_cat_array)) {
+                            $requires_av = 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if(is_array($options)) {
+            if(array_key_exists('mode', $options)) {
+                if(count(get_post_meta( $item_data->get_product_id(), '_ac_av_meta_key' ))) {
+                    if(get_post_meta( $item_data->get_product_id(), '_ac_av_meta_key' )[0]=='on'&&$options['mode']==2) {
+                        $requires_av = 1;
+                    }
+                }
+            }
+        }
+
+        if(is_array($options)) {
+            if(array_key_exists('mode', $options)) {
+                if($options['mode']==0) {
+                    $requires_av = 1;
+                }
+            }
+        }
+        
+    }
+
+    return $requires_av;
+
+}
+
 function unity_orderData($order_id)
 {
+    
     //getting order object
     $order = wc_get_order($order_id);
+
+    // if customer has meta data attribute of merchant_age_verified = true, we can skip age verification
+    $customer_id = $order->get_customer_id();
+    if ( $customer_id ) {
+        $merchant_age_verified = get_user_meta( $customer_id, 'merchant_age_verified', true );
+        if ( $merchant_age_verified === 'true' ) {
+            return [];
+        }
+    }
 
     // Get the Customer billing email
     $billing_email  = $order->get_billing_email();
@@ -68,6 +273,29 @@ function unity_orderData($order_id)
     $billing_postcode   = $order->get_billing_postcode();
     $billing_country    = $order->get_billing_country();
     $billing_phone    = $order->get_billing_phone();
+
+    // Get DOB
+    $dob = $order->get_meta( 'date_of_birth' );
+
+    if ( ! $dob ) {
+        $possible_keys = [
+            '_date_of_birth',
+            'customer_date_of_birth',
+            '_customer_date_of_birth',
+            'kustom_date_of_birth',
+            'billing-date_of_birth',
+        ];
+
+        foreach ( $possible_keys as $key ) {
+            $value = $order->get_meta( $key );
+            if ( ! empty( $value ) ) {
+                $dob = $value;
+                break;
+            }
+        }
+    }
+
+    $billing_dob = $dob ? date( 'Y-m-d', strtotime( $dob ) ) : '';
 
     // Customer shipping information details
     $shipping_first_name = $order->get_shipping_first_name();
@@ -89,8 +317,6 @@ function unity_orderData($order_id)
     $options = get_option( 'unity_plugin_options' );
 
 
-
-
     foreach ($items as $item_id => $item_data)
     {   
         //getting product object
@@ -100,7 +326,8 @@ function unity_orderData($order_id)
         $pro_cat_array = wp_get_post_terms($item_data->get_product_id(), 'product_cat', array( 'fields' => 'ids' ));
         $row_price = $item_data->get_total();
         $sku = $sku = $_product->get_sku();
-        $name = $sku = $_product->get_name();
+        // Fix for quotes in product name
+        $name = $sku = str_replace('"','&quot;',$_product->get_name());
         $qty = $item_data->get_quantity();
 
         if(is_array($options)) {
@@ -116,14 +343,24 @@ function unity_orderData($order_id)
             }
         }
         
-
-        if(get_post_meta( $item_data->get_product_id(), '_ac_av_meta_key' )[0]=='on'&&$options['mode']==2) {
-            $requires_av = 1;
+        if(is_array($options)) {
+            if(array_key_exists('mode', $options)) {
+                if(count(get_post_meta( $item_data->get_product_id(), '_ac_av_meta_key' ))) {
+                    if(get_post_meta( $item_data->get_product_id(), '_ac_av_meta_key' )[0]=='on'&&$options['mode']==2) {
+                        $requires_av = 1;
+                    }
+                }
+            }
         }
 
-        if($options['mode']==0) {
-            $requires_av = 1;
+        if(is_array($options)) {
+            if(array_key_exists('mode', $options)) {
+                if($options['mode']==0) {
+                    $requires_av = 1;
+                }
+            }
         }
+        
 
         //storing all the line item as a string form
         $product_js .= '{"id": "' . $sku . '","name":"' . $name . '","price":"' . $row_price . '","quantity":"' . $qty . '","requires_av":"' . $requires_av . '"},';
@@ -138,7 +375,7 @@ function unity_orderData($order_id)
     "lastname":"'.$billing_last_name.'",
     "phone":"'.$billing_phone.'",
     "order_id":"'.$order_id.'",
-    "dob":"",
+    "dob":"'.$billing_dob.'",
     "address":{
     "address1":"'.$billing_address_1.'",
     "address2":"'.$billing_address_2.'",
@@ -146,18 +383,24 @@ function unity_orderData($order_id)
     "city":"'.$billing_city.'",
     "postcode":"'.$billing_postcode.'",
     "country":"'.$billing_country.'"},
-    "shippingData":{
-        "firstname":"'.$shipping_first_name.'",
-        "lastname":"'.$shipping_last_name.'",
-        "address1":"'.$shipping_address_1.'",
-        "address2":"'.$shipping_address_2.'",
-        "address3":"",
-        "city":"'.$shipping_city.'",
-        "postcode":"'.$shipping_postcode.'",
-        "country":"'.$shipping_country.'",
-        "phone":"'.$shipping_phone.'"}, 
     "site_transaction_ref": "'.$wc_order_id.'",
-    }
+    },
+    {
+        "email":"'.$billing_email.'",
+    "firstname":"'.$billing_first_name.'",
+    "lastname":"'.$billing_last_name.'",
+    "phone":"'.$billing_phone.'",
+    "order_id":"'.$order_id.'",
+    "dob":"'.$billing_dob.'",
+    "address":{
+    "address1":"'.$billing_address_1.'",
+    "address2":"'.$billing_address_2.'",
+    "address3":"",
+    "city":"'.$billing_city.'",
+    "postcode":"'.$billing_postcode.'",
+    "country":"'.$billing_country.'"},
+    "site_transaction_ref": "'.$wc_order_id.'",
+        }
     ],
     "cart": [{"products":[
         '.$product_js.'
@@ -176,7 +419,18 @@ function unity_orderData($order_id)
 
 }
 
-add_action('woocommerce_thankyou', 'unity_orderData');
+// add_action('woocommerce_thankyou', 'unity_orderData');
+
+add_action( 'template_redirect', function () {
+
+    $request_uri = $_SERVER['REQUEST_URI'] ?? '';
+
+    if ( preg_match( '#/checkout/order-received/(\d+)/#', $request_uri, $matches ) ) {
+        $order_id = (int) $matches[1];
+
+        unity_orderData( $order_id );
+    }
+});
 
 function unity_register_av_states_order_status() {
     register_post_status( 'wc-av-high-risk', array(
@@ -227,6 +481,12 @@ function unity_add_settings_page() {
 }
 add_action( 'admin_menu', 'unity_add_settings_page' );
 
+add_action('admin_menu', function() {
+    
+    add_options_page('Test Page', 'Test Page', 'manage_options', 'test-page', function() {
+        echo '<h1>It works!</h1>';
+    });
+});
 
 
 function unity_render_plugin_settings_page() {
@@ -535,11 +795,14 @@ function unity_setting_mode() {
     $selectOptions = '';
     foreach($array as $key => $value) {
         $selected = '';
-        if(array_key_exists('mode', $options)) {
-            if($options['mode']==$key) {
-                $selected = 'selected="selected"';
+        if($options) {
+            if(array_key_exists('mode', $options)) {
+                if($options['mode']==$key) {
+                    $selected = 'selected="selected"';
+                }
             }
         }
+        
         $selectOptions .= '<option value="'.$key.'" '.$selected.'>'.$value.'</option>';
 
     }
@@ -585,6 +848,7 @@ function unity_custom_box_html( $post ) {
     if($value=='on') {
         $checked = true;
     }
+    wp_nonce_field( 'unity_save_product_av_meta', 'unity_product_av_meta_nonce' );
     ?>
 
 <label for="_ac_av_meta_key">Age verify this product: </label>
@@ -595,25 +859,27 @@ function unity_custom_box_html( $post ) {
 }
 
 function unity_save_postdata($post_id) {
-    $ac_av = get_post_meta($post_id, '_ac_av_meta_key', true);
-    $ac_av_val = "off";
-    if($ac_av) {
-        if($ac_av=="on") {
-            $ac_av_val = "on";
-        }
-        update_post_meta(
-            $post_id,
-            '_ac_av_meta_key',
-            $ac_av_val
-        );
-    } else {
-        update_post_meta(
-            $post_id,
-            '_ac_av_meta_key',
-            'off'
-        );
+    if ( ! isset( $_POST['unity_product_av_meta_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['unity_product_av_meta_nonce'] ) ), 'unity_save_product_av_meta' ) ) {
+        return;
     }
-     
+
+    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+        return;
+    }
+
+    if ( wp_is_post_autosave( $post_id ) || wp_is_post_revision( $post_id ) ) {
+        return;
+    }
+
+    if ( ! current_user_can( 'edit_post', $post_id ) ) {
+        return;
+    }
+
+    if ( isset( $_POST['_ac_av_meta_key'] ) ) {
+        update_post_meta( $post_id, '_ac_av_meta_key', 'on' );
+    } else {
+        delete_post_meta( $post_id, '_ac_av_meta_key' );
+    }
 
 }
 add_action( 'save_post_product', 'unity_save_postdata' );
@@ -678,29 +944,92 @@ add_action( 'manage_shop_order_posts_custom_column', 'unity_add_new_order_admin_
 
 function unity_set_status( $order_id ) {
     $order = wc_get_order($order_id);
-    if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
+    $reqAv = requiresAV($order_id);
+    
+    if ( $reqAv === 0) {
+        if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
         
-        $order->add_meta_data('unity_age_verification', 'Pending');
-        $order->save();
+            $order->add_meta_data('unity_age_verification', 'Not Required');
+            $order->save();
+        } else {
+            add_post_meta($order_id, 'unity_age_verification', 'Not Required',true);  
+        }
     } else {
-        add_post_meta($order_id, 'unity_age_verification', 'Pending',true);  
+        if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
+        
+            $order->add_meta_data('unity_age_verification', 'Pending');
+            $order->save();
+        } else {
+            add_post_meta($order_id, 'unity_age_verification', 'Pending',true);  
+        }
+    } 
+    
+}
+add_action( 'woocommerce_checkout_update_order_meta', 'unity_set_status', 1, 1 );
+
+
+// -----------------------------------------------------------------------
+// Age Verification Status as its own meta box on the order edit screen,
+// instead of being embedded inside the main "Order data" panel.
+//
+// Registered via the standard add_meta_box() API so it renders as a
+// genuinely separate section/tab:
+//  - Default WooCommerce (legacy post-based orders): its own box in the
+//    order edit screen sidebar, next to (not inside) Order data.
+//  - Default WooCommerce (HPOS / Orders table): same, on the HPOS order
+//    screen id.
+//  - BrikPanel's reskinned order admin: BrikPanel reads the same
+//    WordPress meta box registry and automatically places any box it
+//    doesn't recognise under its "More" tab as its own section, so no
+//    BrikPanel-specific code is needed here.
+// -----------------------------------------------------------------------
+
+function unity_add_order_age_verification_meta_box() {
+    $screen_id = function_exists( 'wc_get_page_screen_id' ) ? wc_get_page_screen_id( 'shop-order' ) : 'shop_order';
+
+    add_meta_box(
+        'unity_age_verification_status',
+        __( 'Age Verification Status', 'agechecked-plus' ),
+        'unity_render_order_age_verification_meta_box',
+        $screen_id,
+        'side',
+        'default'
+    );
+
+    // Belt-and-braces: also register on the legacy post type screen id in
+    // case wc_get_page_screen_id() ever disagrees with it (e.g. during the
+    // HPOS/legacy sync window), so the box never silently disappears.
+    if ( 'shop_order' !== $screen_id ) {
+        add_meta_box(
+            'unity_age_verification_status',
+            __( 'Age Verification Status', 'agechecked-plus' ),
+            'unity_render_order_age_verification_meta_box',
+            'shop_order',
+            'side',
+            'default'
+        );
     }
 }
-add_action( 'woocommerce_new_order', 'unity_set_status', 1, 1 );
+add_action( 'add_meta_boxes', 'unity_add_order_age_verification_meta_box' );
 
+function unity_render_order_age_verification_meta_box( $post_or_order ) {
+    $order = ( $post_or_order instanceof WC_Order ) ? $post_or_order : wc_get_order( $post_or_order->ID );
 
-// display the extra data in the order admin panel
-function unity_display_order_data_in_admin( $order ){  ?>
-<div class="form-field form-field-wide wc-customer-user">
-    <h3><?php _e( 'Age Verification Status' ); ?></h3>
-    <?php 
-        if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
-            echo '<p><strong>' . __( 'Status' ) . ':</strong> ' . $order->get_meta( 'unity_age_verification') . '</p>';
-        } else {
-            echo '<p><strong>' . __( 'Status' ) . ':</strong> ' . get_post_meta( $order->get_id(), 'unity_age_verification', true ) . '</p>';
-        }
-            
-            ?>
-</div>
-<?php }
-add_action( 'woocommerce_admin_order_data_after_order_details', 'unity_display_order_data_in_admin' );
+    if ( ! $order ) {
+        return;
+    }
+
+    $status = $order->get_meta( 'unity_age_verification' );
+    ?>
+<p>
+    <strong><?php esc_html_e( 'Status', 'agechecked-plus' ); ?>:</strong>
+    <?php
+    if ( $status ) {
+        echo esc_html( $status );
+    } else {
+        echo '<span title="' . esc_attr__( 'This order was placed before the Age Verification plugin was installed or when the plugin was disabled', 'agechecked-plus' ) . '">' . esc_html__( 'Unknown', 'agechecked-plus' ) . '</span>';
+    }
+    ?>
+</p>
+<?php
+}
