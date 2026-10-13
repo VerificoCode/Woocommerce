@@ -159,6 +159,41 @@ function unity_filter_users_by_age_verification( $query ) {
 }
 add_action( 'pre_get_users', 'unity_filter_users_by_age_verification' );
 
+// -----------------------------------------------------------------------
+// Expose Age Verification Status in the WooCommerce Analytics > Customers
+// CSV export. The Analytics Customers *screen* itself (admin.php?page=
+// wc-admin&path=/customers) renders a React table with a hardcoded column
+// list and no JS filter to extend it (confirmed by inspecting WooCommerce's
+// built assets/client/admin/chunks/analytics-report-customers.js — its
+// getHeadersContent() array has no applyFilters() wrapper), so no column
+// can be added there without overriding WooCommerce's own JS bundle. The
+// export, however, is a documented PHP extension point.
+// -----------------------------------------------------------------------
+
+function unity_add_customers_export_column( $export_columns ) {
+    $export_columns['merchant_age_verified'] = __( 'Age Verification Status', 'agechecked-plus' );
+    return $export_columns;
+}
+add_filter( 'woocommerce_report_customers_export_columns', 'unity_add_customers_export_column' );
+
+function unity_add_customers_export_value( $export_item, $item ) {
+    $user_id = $item['user_id'] ?? 0;
+
+    if ( ! $user_id ) {
+        $export_item['merchant_age_verified'] = '';
+        return $export_item;
+    }
+
+    $is_verified = 'true' === get_user_meta( $user_id, 'merchant_age_verified', true );
+
+    $export_item['merchant_age_verified'] = $is_verified
+        ? __( 'Verified', 'agechecked-plus' )
+        : __( 'Not verified', 'agechecked-plus' );
+
+    return $export_item;
+}
+add_filter( 'woocommerce_report_customers_prepare_export_item', 'unity_add_customers_export_value', 10, 2 );
+
 $GLOBALS['unityName'] = "AgeChecked Plus+";
 $GLOBALS['unityVersion'] = "2_0_0";
 // To show register link
