@@ -3,7 +3,7 @@
 * Plugin Name: AgeChecked Plus+ v2
 * Plugin URI: https://www.agechecked.com/
 * Description: Adds age verification to your website.
-* Version: 1.5.0
+* Version: 1.5.1
 * Author: AgeChecked Plus+ Verifico
 * Author URI: https://www.verifico.io
 */
@@ -25,6 +25,27 @@ function unity_is_woocommerce_active() {
 
 if ( ! unity_is_woocommerce_active() ) {
     return;
+}
+
+/**
+ * Safe wrapper around OrderUtil::custom_orders_table_usage_is_enabled().
+ *
+ * That method only exists since WooCommerce 8.7.0 — calling it directly on
+ * an older WooCommerce (the plugin otherwise only requires 3.0+) throws a
+ * fatal "Class/method not found" error and takes the whole site down.
+ * Guard with method_exists() and degrade to "legacy/post-based storage"
+ * (false) when it's unavailable, which is the correct assumption for any
+ * WooCommerce old enough not to have HPOS at all.
+ */
+function unity_hpos_enabled() {
+    if (
+        class_exists( 'Automattic\\WooCommerce\\Utilities\\OrderUtil' )
+        && method_exists( 'Automattic\\WooCommerce\\Utilities\\OrderUtil', 'custom_orders_table_usage_is_enabled' )
+    ) {
+        return OrderUtil::custom_orders_table_usage_is_enabled();
+    }
+
+    return false;
 }
 
 function unity_render_customer_age_verification_status( $user ) {
@@ -549,13 +570,6 @@ function unity_add_settings_page() {
 }
 add_action( 'admin_menu', 'unity_add_settings_page' );
 
-add_action('admin_menu', function() {
-    
-    add_options_page('Test Page', 'Test Page', 'manage_options', 'test-page', function() {
-        echo '<h1>It works!</h1>';
-    });
-});
-
 
 function unity_render_plugin_settings_page() {
     $options = get_option( 'unity_plugin_options' );
@@ -966,7 +980,7 @@ function unity_woocommerce_shop_order_list_table_custom_column ( $column, $order
 	if ( 'unity_age_verification' !== $column ) {
 		return;
 	}
-    if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
+    if ( unity_hpos_enabled() ) {
         $avStatus = "";
         
         $avStatus = [$order->get_meta('unity_age_verification')];
@@ -990,7 +1004,7 @@ add_filter( 'manage_edit-shop_order_columns', 'unity_add_new_order_admin_list_co
  
 function unity_add_new_order_admin_list_column_content( $column ) {
     
-    if ( !OrderUtil::custom_orders_table_usage_is_enabled() ) {
+    if ( ! unity_hpos_enabled() ) {
 
         if ( 'unity_age_verification' === $column ) {
 
@@ -1015,7 +1029,7 @@ function unity_set_status( $order_id ) {
     $reqAv = requiresAV($order_id);
     
     if ( $reqAv === 0) {
-        if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
+        if ( unity_hpos_enabled() ) {
         
             $order->add_meta_data('unity_age_verification', 'Not Required');
             $order->save();
@@ -1023,7 +1037,7 @@ function unity_set_status( $order_id ) {
             add_post_meta($order_id, 'unity_age_verification', 'Not Required',true);  
         }
     } else {
-        if ( OrderUtil::custom_orders_table_usage_is_enabled() ) {
+        if ( unity_hpos_enabled() ) {
         
             $order->add_meta_data('unity_age_verification', 'Pending');
             $order->save();

@@ -23,7 +23,9 @@ This plugin provides age verification functionality for WooCommerce stores.
 ## Requirements
 
 - WordPress 5.0 or higher
-- WooCommerce 3.0 or higher
+- WooCommerce 3.0 or higher (full High-Performance Order Storage/HPOS-aware
+  behavior requires WooCommerce 8.7+; the plugin detects HPOS availability
+  at runtime and falls back to legacy order storage on older versions)
 
 ## Frequently Asked Questions
 
